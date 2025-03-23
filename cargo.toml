@@ -1,0 +1,30 @@
+[package]
+name = "rift-lang"
+version = "2.0.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rustyline = "14.0"
+web3 = "0.19.0"
+solana-client = "1.18.0"
+rusoto_core = "0.48.0"
+rusoto_s3 = "0.48.0"
+rusoto_lambda = "0.48.0"
+tokio = { version = "1.0", features = ["full"] }
+sha2 = "0.10.8"
+futures = "0.3.30"
+chrono = "0.4.38"
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+syn = "2.0"
+tree-sitter = "0.20.10"  # Pinned for stability
+tree-sitter-python = "0.20.10"
+tree-sitter-javascript = "0.20.10"
+tree-sitter-go = "0.20.10"
+tree-sitter-cpp = "0.20.10"
+tree-sitter-java = "0.20.10"
+tree-sitter-php = "0.20.10"
+notify = "6.1"  # File watching
+tch = "0.13"   # TensorFlow alternative
+watchdog = "0.9"  # Python file watching
