@@ -6,5 +6,5 @@ Rift, created by Zen, fuses code from any language (Python, JavaScript, Java, PH
 
 1. **Clone the Repo**:
    ```bash
-   git clone https://github.com/zen/rift-lang.git
+   git clone https://github.com/zenyaga/rift-lang.git
    cd rift-lang
