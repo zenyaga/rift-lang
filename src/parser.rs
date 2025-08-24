@@ -1,167 +1,201 @@
-use crate::{lexer::Token, AST};
+use crate::{lexer::{Token, TokenKind}, AST, error::{Result, RiftError}};
 use std::collections::HashMap;
 
-pub fn parse(tokens: &[Token]) -> Result<AST, String> {
-    let mut pos = 0;
-    let mut nodes = Vec::new();
-
-    while pos < tokens.len() {
-        match tokens[pos].value.as_str() {
-            "@rift" => {
-                pos += 1;
-                let name = tokens[pos].value.clone();
-                pos += 2; // Skip name and {
-                let body = parse_block(tokens, &mut pos)?;
-                nodes.push(AST::Rift(name, body));
-            }
-            "@fuse" => {
-                pos += 1;
-                let lang = tokens[pos].value.clone();
-                pos += 2; // Skip lang and {
-                let code = tokens[pos].value.clone();
-                pos += 2; // Skip code and }
-                nodes.push(AST::Fuse(lang, code));
-            }
-            "@task" => {
-                pos += 1;
-                let name = tokens[pos].value.clone();
-                pos += 2; // Skip name and {
-                let body = parse_block(tokens, &mut pos)?;
-                nodes.push(AST::Task(name, body));
-            }
-            "@target" => {
-                pos += 1;
-                let lang = tokens[pos].value.clone();
-                pos += 1; // Skip lang
-                nodes.push(AST::Target(lang));
-            }
-            "@deploy" => {
-                pos += 1;
-                let target = tokens[pos].value.clone();
-                pos += 2; // Skip target and {
-                let config = parse_config(tokens, &mut pos)?;
-                nodes.push(AST::Deploy(target, config));
-            }
-            "let" => {
-                pos += 1;
-                let name = tokens[pos].value.clone();
-                pos += 2; // Skip name and =
-                let value = parse_expression(tokens, &mut pos)?;
-                pos += 1; // Skip ;
-                nodes.push(AST::Let(name, Box::new(value)));
-            }
-            "call" => {
-                pos += 1;
-                let name = tokens[pos].value.clone();
-                pos += 1; // Skip name
-                let args = if pos < tokens.len() && tokens[pos].value != ";" {
-                    parse_args(tokens, &mut pos)?
-                } else {
-                    Vec::new()
-                };
-                pos += 1; // Skip ;
-                nodes.push(AST::Call(name, args));
-            }
-            "if" => {
-                pos += 1;
-                let condition = parse_expression(tokens, &mut pos)?;
-                pos += 1; // Skip {
-                let then_body = parse_block(tokens, &mut pos)?;
-                let mut else_body = Vec::new();
-                if pos < tokens.len() && tokens[pos].value == "else" {
-                    pos += 2; // Skip else {
-                    else_body = parse_block(tokens, &mut pos)?;
-                }
-                nodes.push(AST::If(Box::new(condition), then_body, else_body));
-            }
-            "while" => {
-                pos += 1;
-                let condition = parse_expression(tokens, &mut pos)?;
-                pos += 1; // Skip {
-                let body = parse_block(tokens, &mut pos)?;
-                nodes.push(AST::While(Box::new(condition), body));
-            }
-            _ => return Err(format!("Unexpected token: {}", tokens[pos].value)),
-        }
-    }
-    Ok(AST::Program(nodes))
+pub struct Parser {
+    tokens: Vec<Token>,
+    pos: usize,
 }
 
-fn parse_block(tokens: &[Token], pos: &mut usize) -> Result<Vec<AST>, String> {
-    let mut body = Vec::new();
-    while *pos < tokens.len() && tokens[*pos].value != "}" {
-        body.push(parse_single(tokens, pos)?);
-        *pos += 1;
+impl Parser {
+    pub fn new(tokens: Vec<Token>) -> Self {
+        Self { tokens, pos: 0 }
     }
-    Ok(body)
-}
-
-fn parse_single(tokens: &[Token], pos: &mut usize) -> Result<AST, String> {
-    match tokens[*pos].value.as_str() {
-        "@fuse" => {
-            *pos += 1;
-            let lang = tokens[*pos].value.clone();
-            *pos += 2; // Skip lang and {
-            let code = tokens[*pos].value.clone();
-            *pos += 2; // Skip code and }
-            Ok(AST::Fuse(lang, code))
+    
+    pub fn parse(&mut self) -> Result<AST> {
+        let mut nodes = Vec::new();
+        
+        while !self.is_at_end() {
+            // Skip comments
+            if self.current_token_is(TokenKind::Comment) {
+                self.advance();
+                continue;
+            }
+            
+            match self.parse_statement() {
+                Ok(node) => nodes.push(node),
+                Err(e) => return Err(self.error_with_context(format!("Parse error: {}", e))),
+            }
         }
-        "@target" => {
-            *pos += 1;
-            let lang = tokens[*pos].value.clone();
-            *pos += 1; // Skip lang
-            Ok(AST::Target(lang))
+        
+        Ok(AST::Program(nodes))
+    }
+    
+    fn parse_statement(&mut self) -> Result<AST> {
+        if self.is_at_end() {
+            return Err(RiftError::ParseError("Unexpected end of input".to_string()));
         }
-        "let" => {
-            *pos += 1;
-            let name = tokens[*pos].value.clone();
-            *pos += 2; // Skip name and =
-            let value = parse_expression(tokens, pos)?;
-            Ok(AST::Let(name, Box::new(value)))
+        
+        match self.current().value.as_str() {
+            "@rift" => self.parse_rift(),
+            "@fuse" => self.parse_fuse(),
+            "@task" => self.parse_task(),
+            "@target" => self.parse_target(),
+            "@deploy" => self.parse_deploy(),
+            "let" => self.parse_let(),
+            "call" => self.parse_call(),
+            "if" => self.parse_if(),
+            "while" => self.parse_while(),
+            _ => Err(RiftError::ParseError(format!(
+                "Unexpected token: '{}' at line {}, column {}",
+                self.current().value, self.current().line, self.current().column
+            ))),
         }
-        "call" => {
-            *pos += 1;
-            let name = tokens[*pos].value.clone();
-            *pos += 1; // Skip name
-            let args = if *pos < tokens.len() && tokens[*pos].value != ";" {
-                parse_args(tokens, pos)?
+    }
+    
+    fn parse_rift(&mut self) -> Result<AST> {
+        self.consume_keyword("@rift")?;
+        
+        let name = self.consume_identifier("Expected rift name")?;
+        self.consume_symbol("{", "Expected '{' after rift name")?;
+        
+        let body = self.parse_block()?;
+        
+        Ok(AST::Rift(name, body))
+    }
+    
+    fn parse_fuse(&mut self) -> Result<AST> {
+        self.consume_keyword("@fuse")?;
+        
+        let lang = self.consume_string("Expected language string after @fuse")?;
+        self.consume_symbol("{", "Expected '{' after language")?;
+        
+        let code = self.consume_string("Expected code string in fuse block")?;
+        
+        self.consume_symbol("}", "Expected '}' after code")?;
+        
+        Ok(AST::Fuse(lang, code))
+    }
+    
+    fn parse_task(&mut self) -> Result<AST> {
+        self.consume_keyword("@task")?;
+        
+        let name = self.consume_identifier("Expected task name")?;
+        self.consume_symbol("{", "Expected '{' after task name")?;
+        
+        let body = self.parse_block()?;
+        
+        Ok(AST::Task(name, body))
+    }
+    
+    fn parse_target(&mut self) -> Result<AST> {
+        self.consume_keyword("@target")?;
+        
+        let lang = self.consume_string("Expected language string after @target")?;
+        
+        Ok(AST::Target(lang))
+    }
+    
+    fn parse_deploy(&mut self) -> Result<AST> {
+        self.consume_keyword("@deploy")?;
+        
+        let target = self.consume_string("Expected target string after @deploy")?;
+        self.consume_symbol("{", "Expected '{' after deploy target")?;
+        
+        let config = self.parse_config()?;
+        
+        Ok(AST::Deploy(target, config))
+    }
+    
+    fn parse_let(&mut self) -> Result<AST> {
+        self.consume_keyword("let")?;
+        
+        let name = self.consume_identifier("Expected variable name after 'let'")?;
+        self.consume_symbol("=", "Expected '=' after variable name")?;
+        
+        let value = self.parse_expression()?;
+        
+        self.consume_symbol(";", "Expected ';' after let statement")?;
+        
+        Ok(AST::Let(name, Box::new(value)))
+    }
+    
+    fn parse_call(&mut self) -> Result<AST> {
+        self.consume_keyword("call")?;
+        
+        let name = self.consume_identifier("Expected function name after 'call'")?;
+        let mut args = Vec::new();
+        
+        // Parse optional arguments
+        while !self.is_at_end() && !self.current_token_value_is(";") {
+            if self.current_token_value_is("with") {
+                self.advance(); // consume 'with'
+            }
+            
+            args.push(self.parse_expression()?);
+            
+            if self.current_token_value_is(",") {
+                self.advance(); // consume comma
             } else {
-                Vec::new()
-            };
-            Ok(AST::Call(name, args))
+                break;
+            }
         }
-        _ => parse_expression(tokens, pos),
+        
+        self.consume_symbol(";", "Expected ';' after call statement")?;
+        
+        Ok(AST::Call(name, args))
     }
-}
-
-fn parse_expression(tokens: &[Token], pos: &mut usize) -> Result<AST, String> {
-    let token = &tokens[*pos];
-    *pos += 1;
-    match token.kind.as_str() {
-        "number" => Ok(AST::Number(token.value.parse().unwrap())),
-        "string" => Ok(AST::String(token.value.clone())),
-        "identifier" => Ok(AST::Identifier(token.value.clone())),
-        _ => Err(format!("Invalid expression: {}", token.value)),
+    
+    fn parse_if(&mut self) -> Result<AST> {
+        self.consume_keyword("if")?;
+        
+        let condition = self.parse_expression()?;
+        
+        self.consume_symbol("{", "Expected '{' after if condition")?;
+        let then_body = self.parse_block_content()?;
+        
+        let mut else_body = Vec::new();
+        
+        if !self.is_at_end() && self.current_token_value_is("else") {
+            self.advance(); // consume 'else'
+            self.consume_symbol("{", "Expected '{' after 'else'")?;
+            else_body = self.parse_block_content()?;
+        }
+        
+        Ok(AST::If(Box::new(condition), then_body, else_body))
     }
-}
-
-fn parse_args(tokens: &[Token], pos: &mut usize) -> Result<Vec<AST>, String> {
-    let mut args = Vec::new();
-    while *pos < tokens.len() && tokens[*pos].value != ";" {
-        args.push(parse_expression(tokens, pos)?);
-        if *pos < tokens.len() && tokens[*pos].value == "," { *pos += 1; }
+    
+    fn parse_while(&mut self) -> Result<AST> {
+        self.consume_keyword("while")?;
+        
+        let condition = self.parse_expression()?;
+        
+        self.consume_symbol("{", "Expected '{' after while condition")?;
+        let body = self.parse_block_content()?;
+        
+        Ok(AST::While(Box::new(condition), body))
     }
-    Ok(args)
-}
-
-fn parse_config(tokens: &[Token], pos: &mut usize) -> Result<HashMap<String, String>, String> {
-    let mut config = HashMap::new();
-    while *pos < tokens.len() && tokens[*pos].value != "}" {
-        let key = tokens[*pos].value.clone();
-        *pos += 2; // Skip key and =
-        let value = tokens[*pos].value.clone();
-        *pos += 2; // Skip value and ;
-        config.insert(key, value);
+    
+    fn parse_block(&mut self) -> Result<Vec<AST>> {
+        let body = self.parse_block_content()?;
+        Ok(body)
     }
-    Ok(config)
-}
+    
+    fn parse_block_content(&mut self) -> Result<Vec<AST>> {
+        let mut body = Vec::new();
+        
+        while !self.is_at_end() && !self.current_token_value_is("}") {
+            // Skip comments in blocks
+            if self.current_token_is(TokenKind::Comment) {
+                self.advance();
+                continue;
+            }
+            
+            body.push(self.parse_statement()?);
+        }
+        
+        self.consume_symbol("}", "Expected '}' to close block")?;
+        
+        Ok(body)
+    }
+    
+    fn parse_expression(&mut self)
